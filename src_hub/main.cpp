@@ -1,103 +1,229 @@
 #include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <BLEDevice.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
 
-#define OLED_WIDTH  128
-#define OLED_HEIGHT 64
+// ========================================
+// SETTINGS
+// ========================================
 
-#define OLED_SDA 13
-#define OLED_SCL 14
+#define MAX_BLE_DEVICES 100
+#define REPORT_INTERVAL 1000
 
-#define OLED_ADDRESS 0x3C
-#define OLED_RESET   -1
+// ========================================
+// BLE
+// ========================================
 
-Adafruit_SSD1306 display(
-    OLED_WIDTH,
-    OLED_HEIGHT,
-    &Wire,
-    OLED_RESET
-);
+BLEScan *bleScan;
 
-void setup() {
-    Serial.begin(115200);
-    delay(500);
+uint8_t bleMacs[MAX_BLE_DEVICES][6];
+uint16_t bleUnique = 0;
 
-    // SDA, SCL
-    Wire.begin(OLED_SDA, OLED_SCL);
+// ========================================
+// WIFI
+// ========================================
 
-    Serial.println("Starting GM009605V4.3...");
+uint16_t wifiUnique = 0;
+uint8_t wifiChannel = 0;
+uint32_t wifiPackets = 0;
 
-    if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
-        Serial.println("SSD1306 initialization FAILED!");
-        while (true) {
-            delay(1000);
-        }
+unsigned long lastReport = 0;
+
+// ========================================
+// CHECK BLE MAC
+// ========================================
+
+bool sameMac(uint8_t *a, uint8_t *b)
+{
+    for (int i = 0; i < 6; i++) {
+        if (a[i] != b[i])
+            return false;
     }
 
-    Serial.println("SSD1306 initialized!");
+    return true;
+}
 
-    // Clear everything
-    display.clearDisplay();
-    display.display();
+// ========================================
+// BLE CALLBACK
+// ========================================
 
-    delay(500);
+class BLECallbacks : public BLEAdvertisedDeviceCallbacks {
 
-    // --------------------------------
-    // TEST 1: Full screen
-    // --------------------------------
-    display.fillScreen(SSD1306_WHITE);
-    display.display();
+    void onResult(BLEAdvertisedDevice device)
+    {
+        String address =
+            device.getAddress().toString().c_str();
 
-    delay(1500);
+        // Convert BLE address into bytes
+        uint8_t mac[6];
 
-    // --------------------------------
-    // TEST 2: Completely blank
-    // --------------------------------
-    display.clearDisplay();
-    display.display();
+        int index = 0;
+
+        for (int i = 0; i < 17; i += 3) {
+
+            String part =
+                address.substring(i, i + 2);
+
+            mac[index++] =
+                strtoul(part.c_str(), NULL, 16);
+        }
+
+        // Check if already seen
+        for (uint16_t i = 0; i < bleUnique; i++) {
+
+            if (sameMac(bleMacs[i], mac))
+                return;
+        }
+
+        // Add new device
+        if (bleUnique < MAX_BLE_DEVICES) {
+
+            for (int i = 0; i < 6; i++)
+                bleMacs[bleUnique][i] = mac[i];
+
+            bleUnique++;
+        }
+    }
+};
+
+// ========================================
+// RESET BLE LIST
+// ========================================
+
+void resetBLE()
+{
+    bleUnique = 0;
+}
+
+// ========================================
+// READ ESP8266
+// ========================================
+
+void readWiFi()
+{
+    static String line;
+
+    while (Serial.available()) {
+
+        char c = Serial.read();
+
+        if (c == '\n') {
+
+            line.trim();
+
+            if (line.startsWith("WIFI|")) {
+
+                int p1 = line.indexOf('|');
+                int p2 = line.indexOf('|', p1 + 1);
+                int p3 = line.indexOf('|', p2 + 1);
+
+                if (p1 > 0 && p2 > p1 && p3 > p2) {
+
+                    wifiChannel =
+                        line.substring(p1 + 1, p2).toInt();
+
+                    wifiPackets =
+                        line.substring(p2 + 1, p3).toInt();
+
+                    wifiUnique =
+                        line.substring(p3 + 1).toInt();
+                }
+            }
+
+            else if (line == "READY") {
+
+                // ESP8266 connected
+                Serial.println("[WIFI] READY");
+            }
+
+            line = "";
+        }
+
+        else if (c != '\r') {
+
+            if (line.length() < 100)
+                line += c;
+            else
+                line = "";
+        }
+    }
+}
+
+// ========================================
+// SETUP
+// ========================================
+
+void setup()
+{
+    Serial.begin(115200);
 
     delay(1000);
 
-    // --------------------------------
-    // TEST 3: Border
-    // --------------------------------
-    display.drawRect(
-        0, 0,
-        OLED_WIDTH,
-        OLED_HEIGHT,
-        SSD1306_WHITE
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("       ESP32 SNIFFER HUB");
+    Serial.println("==============================");
+
+    // BLE
+    BLEDevice::init("ESP32_HUB");
+
+    bleScan = BLEDevice::getScan();
+
+    bleScan->setAdvertisedDeviceCallbacks(
+        new BLECallbacks()
     );
 
-    display.display();
+    bleScan->setActiveScan(true);
 
-    delay(1500);
+    bleScan->setInterval(100);
+    bleScan->setWindow(80);
 
-    // --------------------------------
-    // TEST 4: Text
-    // --------------------------------
-    display.clearDisplay();
-
-    display.setTextColor(SSD1306_WHITE);
-
-    display.setTextSize(2);
-    display.setCursor(10, 5);
-    display.println("ESP32");
-
-    display.setTextSize(1);
-    display.setCursor(10, 30);
-    display.println("GM009605V4.3");
-
-    display.setCursor(10, 45);
-    display.println("SSD1306 128x64");
-
-    display.setCursor(10, 56);
-    display.println("WORKING!");
-
-    display.display();
-
-    Serial.println("Display test complete.");
+    Serial.println("[BLE] READY");
+    Serial.println("[WIFI] READY");
 }
 
-void loop() {
+// ========================================
+// LOOP
+// ========================================
+
+void loop()
+{
+    // Keep reading ESP8266
+    readWiFi();
+
+    // Reset BLE counter
+    resetBLE();
+
+    // Scan for 1 second
+    bleScan->start(1, false);
+
+    // Read Wi-Fi data collected during scan
+    readWiFi();
+
+    bleScan->clearResults();
+
+    // ====================================
+    // REPORT
+    // ====================================
+
+    if (millis() - lastReport >= REPORT_INTERVAL) {
+
+        lastReport = millis();
+
+        uint16_t total =
+            wifiUnique + bleUnique;
+
+        Serial.print("[WIFI] UNIQUE=");
+        Serial.println(wifiUnique);
+
+        Serial.print("[BLE]  UNIQUE=");
+        Serial.println(bleUnique);
+
+        Serial.print("[TOTAL] UNIQUE=");
+        Serial.println(total);
+
+        Serial.println("------------------------------");
+    }
+
+    delay(5);
 }
